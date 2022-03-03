@@ -68,7 +68,7 @@ func writeAddressHeader(writer io.Writer, address ProxyAddress) (m int64, err er
 		return m, err
 	}
 
-	err = binary.Write(writer, binary.LittleEndian, address.getLength())
+	err = binary.Write(writer, binary.BigEndian, address.getLength())
 	if err != nil {
 		return m, err
 	}
@@ -78,13 +78,13 @@ func writeAddressHeader(writer io.Writer, address ProxyAddress) (m int64, err er
 }
 
 func writePorts(w io.Writer, src, dst net.Addr) (m int64, err error) {
-	err = binary.Write(w, binary.LittleEndian, getPort(src))
+	err = binary.Write(w, binary.BigEndian, getPort(src))
 	if err != nil {
 		return m, err
 	}
 	m += 2 // Source port length
 
-	err = binary.Write(w, binary.LittleEndian, getPort(dst))
+	err = binary.Write(w, binary.BigEndian, getPort(dst))
 	if err != nil {
 		return m, err
 	}
