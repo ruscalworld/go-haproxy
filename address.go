@@ -43,7 +43,7 @@ func WrapAddress(src, dst net.Addr) (ProxyAddress, error) {
 				SourceAddr:      src,
 				DestinationAddr: dst,
 			}, nil
-		} else if strings.Count(src.String(), ":") == 3 {
+		} else if strings.Count(src.String(), ".") == 3 {
 			// Address is IPv4
 			return &IPv4Address{
 				SourceAddr:      src,
