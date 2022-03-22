@@ -111,7 +111,10 @@ func getTransportProtocol(addr net.Addr) TransportProtocol {
 	case *net.UDPAddr:
 		return TransportProtocolDGRAM
 	case *net.UnixAddr:
-		// Protocol specification also allows using DGRAM type here
+		if addr.Network() == "unixgram" {
+			return TransportProtocolDGRAM
+		}
+
 		return TransportProtocolSTREAM
 	default:
 		panic("address type is not supported")
