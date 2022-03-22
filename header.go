@@ -50,10 +50,12 @@ func (h Header) WriteTo(w io.Writer) (m int64, err error) {
 		return m, err
 	}
 
-	k, err := h.ProxyAddress.WriteTo(w)
-	m += k
-	if err != nil {
-		return m, err
+	if h.Command == CommandPROXY {
+		k, err := h.ProxyAddress.WriteTo(w)
+		m += k
+		if err != nil {
+			return m, err
+		}
 	}
 
 	return
