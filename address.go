@@ -9,6 +9,101 @@ import (
 	"strings"
 )
 
+type AddressFamily byte
+
+const (
+	// AddressFamilyUNSPEC the connection is forwarded for an unknown, unspecified
+	// or unsupported protocol. The sender should use this family when sending
+	// LOCAL commands or when dealing with unsupported protocol families. The
+	// receiver is free to accept the connection anyway and use the real endpoint
+	// addresses or to reject it. The receiver should ignore address information.
+	AddressFamilyUNSPEC AddressFamily = iota
+
+	// AddressFamilyINET the forwarded connection uses the AF_INET address family
+	// (IPv4). The addresses are exactly 4 bytes each in network byte order,
+	// followed by transport protocol information (typically ports).
+	AddressFamilyINET
+
+	// AddressFamilyINET6 the forwarded connection uses the AF_INET6 address family
+	// (IPv6). The addresses are exactly 16 bytes each in network byte order,
+	// followed by transport protocol information (typically ports).
+	AddressFamilyINET6
+
+	// AddressFamilyUNIX the forwarded connection uses the AF_UNIX address family
+	// (UNIX). The addresses are exactly 108 bytes each.
+	AddressFamilyUNIX
+)
+
+type TransportProtocol byte
+
+const (
+	// TransportProtocolUNSPEC the connection is forwarded for an unknown, unspecified
+	// or unsupported protocol. The sender should use this family when sending
+	// LOCAL commands or when dealing with unsupported protocol families. The
+	// receiver is free to accept the connection anyway and use the real endpoint
+	// addresses or to reject it. The receiver should ignore address information.
+	TransportProtocolUNSPEC TransportProtocol = iota
+
+	// TransportProtocolSTREAM the forwarded connection uses a SOCK_STREAM protocol (eg:
+	// TCP or UNIX_STREAM). When used with AF_INET/AF_INET6 (TCP), the addresses
+	// are followed by the source and destination ports represented on 2 bytes
+	// each in network byte order.
+	TransportProtocolSTREAM
+
+	// TransportProtocolDGRAM the forwarded connection uses a SOCK_DGRAM protocol (eg:
+	// UDP or UNIX_DGRAM). When used with AF_INET/AF_INET6 (UDP), the addresses
+	// are followed by the source and destination ports represented on 2 bytes
+	// each in network byte order.
+	TransportProtocolDGRAM
+)
+
+type ProtocolByte struct {
+	AddressFamily     AddressFamily
+	TransportProtocol TransportProtocol
+}
+
+func (p *ProtocolByte) ReadFrom(r io.Reader) (n int64, err error) {
+	data := make([]byte, 1)
+	m, err := r.Read(data)
+	n += int64(m)
+	if err != nil {
+		return n, err
+	}
+
+	p.AddressFamily = AddressFamily(data[0] >> 4)
+	p.TransportProtocol = TransportProtocol(data[0] & 0b1111)
+	return
+}
+
+func (p ProtocolByte) WriteTo(w io.Writer) (n int64, err error) {
+	m, err := w.Write([]byte{byte(p.AddressFamily<<4) | byte(p.TransportProtocol)})
+	return int64(m), err
+}
+
+type AddressLength int16
+
+func (a *AddressLength) ReadFrom(r io.Reader) (n int64, err error) {
+	data := make([]byte, 2)
+	m, err := r.Read(data)
+	n += int64(m)
+	if err != nil {
+		return n, err
+	}
+
+	length := AddressLength(binary.BigEndian.Uint16(data))
+	*a = length
+	return
+}
+
+func (a AddressLength) WriteTo(w io.Writer) (n int64, err error) {
+	err = binary.Write(w, binary.BigEndian, a)
+	if err != nil {
+		return 0, err
+	}
+
+	return 2, nil // Since we have written address length which should be exactly 2 bytes long
+}
+
 func getTransportProtocol(addr net.Addr) TransportProtocol {
 	switch addr.(type) {
 	case *net.TCPAddr:
@@ -61,20 +156,88 @@ func WrapAddress(src, dst net.Addr) (ProxyAddress, error) {
 	return nil, fmt.Errorf("address %s (%s) is not supported", src.String(), reflect.TypeOf(src).String())
 }
 
-func writeAddressHeader(writer io.Writer, address ProxyAddress) (m int64, err error) {
-	n, err := writer.Write([]byte{address.getSignature()})
-	m += int64(n)
+func readPort(r io.Reader) (uint16, int, error) {
+	port := make([]byte, 2)
+	n, err := r.Read(port)
 	if err != nil {
-		return m, err
+		return 0, n, err
 	}
 
-	err = binary.Write(writer, binary.BigEndian, address.getLength())
+	return binary.BigEndian.Uint16(port), n, nil
+}
+
+func readIP(r io.Reader, length int) (*net.IP, int, error) {
+	ip := make([]byte, length)
+	n, err := r.Read(ip)
 	if err != nil {
-		return m, err
+		return nil, n, err
 	}
 
-	m += 2 // Since we have written address length which should be 2 bytes long
-	return
+	return (*net.IP)(&ip), n, nil
+}
+
+type ipReadResult struct {
+	sourceIP        *net.IP
+	destinationIP   *net.IP
+	sourcePort      uint16
+	destinationPort uint16
+}
+
+func readIPsAndPorts(r io.Reader, addressLength int) (*ipReadResult, int, error) {
+	m, n := 0, 0
+	var err error
+	result := &ipReadResult{}
+
+	result.sourceIP, n, err = readIP(r, addressLength)
+	m += n
+	if err != nil {
+		return nil, m, err
+	}
+
+	result.destinationIP, n, err = readIP(r, addressLength)
+	m += n
+	if err != nil {
+		return nil, m, err
+	}
+
+	result.sourcePort, n, err = readPort(r)
+	m += n
+	if err != nil {
+		return nil, m, err
+	}
+
+	result.destinationPort, n, err = readPort(r)
+	m += n
+	if err != nil {
+		return nil, m, err
+	}
+
+	return result, m, nil
+}
+
+type unixReadResult struct {
+	SourceAddr      []byte
+	DestinationAddr []byte
+}
+
+func readUnix(r io.Reader) (*unixReadResult, int, error) {
+	result := &unixReadResult{
+		SourceAddr:      make([]byte, 108),
+		DestinationAddr: make([]byte, 108),
+	}
+
+	n, err := r.Read(result.SourceAddr)
+	if err != nil {
+		return nil, n, err
+	}
+
+	m, err := r.Read(result.DestinationAddr)
+	n += m
+	if err != nil {
+		return nil, n, err
+	}
+
+	return result, n, nil
 }
 
 func writePorts(w io.Writer, src, dst net.Addr) (m int64, err error) {
@@ -96,9 +259,9 @@ func writePorts(w io.Writer, src, dst net.Addr) (m int64, err error) {
 func addressToBytes(addr net.Addr) []byte {
 	switch addr.(type) {
 	case *net.TCPAddr:
-		return addr.(*net.TCPAddr).IP
+		return alignIP(addr.(*net.TCPAddr).IP)
 	case *net.UDPAddr:
-		return addr.(*net.UDPAddr).IP
+		return alignIP(addr.(*net.UDPAddr).IP)
 	case *net.UnixAddr:
 		data := make([]byte, 108)
 		copy(data, addr.String())
@@ -106,6 +269,14 @@ func addressToBytes(addr net.Addr) []byte {
 	default:
 		panic("address type is not supported")
 	}
+}
+
+func alignIP(ip net.IP) []byte {
+	if len(ip) < 16 {
+		return append(make([]byte, 16-len(ip)), ip...)
+	}
+
+	return ip
 }
 
 func getPort(addr net.Addr) uint16 {
@@ -121,8 +292,8 @@ func getPort(addr net.Addr) uint16 {
 
 type ProxyAddress interface {
 	io.WriterTo
-	getLength() int16
-	getSignature() byte
+	getLength() AddressLength
+	getSignature() ProtocolByte
 }
 
 type IPv4Address struct {
@@ -131,11 +302,6 @@ type IPv4Address struct {
 }
 
 func (a IPv4Address) WriteTo(w io.Writer) (m int64, err error) {
-	m, err = writeAddressHeader(w, a)
-	if err != nil {
-		return m, err
-	}
-
 	n, err := w.Write(addressToBytes(a.SourceAddr)[12:])
 	m += int64(n)
 	if err != nil {
@@ -157,12 +323,12 @@ func (a IPv4Address) WriteTo(w io.Writer) (m int64, err error) {
 	return
 }
 
-func (a IPv4Address) getLength() int16 {
+func (a IPv4Address) getLength() AddressLength {
 	return 12
 }
 
-func (a IPv4Address) getSignature() byte {
-	return byte(AddressFamilyINET)<<4 | byte(getTransportProtocol(a.SourceAddr))
+func (a IPv4Address) getSignature() ProtocolByte {
+	return ProtocolByte{AddressFamilyINET, getTransportProtocol(a.SourceAddr)}
 }
 
 type IPv6Address struct {
@@ -171,11 +337,6 @@ type IPv6Address struct {
 }
 
 func (a IPv6Address) WriteTo(w io.Writer) (m int64, err error) {
-	m, err = writeAddressHeader(w, a)
-	if err != nil {
-		return m, err
-	}
-
 	n, err := w.Write(addressToBytes(a.SourceAddr))
 	m += int64(n)
 	if err != nil {
@@ -197,12 +358,12 @@ func (a IPv6Address) WriteTo(w io.Writer) (m int64, err error) {
 	return
 }
 
-func (a IPv6Address) getLength() int16 {
+func (a IPv6Address) getLength() AddressLength {
 	return 36
 }
 
-func (a IPv6Address) getSignature() byte {
-	return byte(AddressFamilyINET6)<<4 | byte(getTransportProtocol(a.SourceAddr))
+func (a IPv6Address) getSignature() ProtocolByte {
+	return ProtocolByte{AddressFamilyINET6, getTransportProtocol(a.SourceAddr)}
 }
 
 type UnixAddr struct {
@@ -211,11 +372,6 @@ type UnixAddr struct {
 }
 
 func (a UnixAddr) WriteTo(w io.Writer) (m int64, err error) {
-	m, err = writeAddressHeader(w, a)
-	if err != nil {
-		return m, err
-	}
-
 	n, err := w.Write(addressToBytes(a.SourceAddr))
 	m += int64(n)
 	if err != nil {
@@ -231,10 +387,10 @@ func (a UnixAddr) WriteTo(w io.Writer) (m int64, err error) {
 	return
 }
 
-func (a UnixAddr) getLength() int16 {
+func (a UnixAddr) getLength() AddressLength {
 	return 216
 }
 
-func (a UnixAddr) getSignature() byte {
-	return byte(AddressFamilyUNIX)<<4 | byte(getTransportProtocol(a.SourceAddr))
+func (a UnixAddr) getSignature() ProtocolByte {
+	return ProtocolByte{AddressFamilyUNIX, getTransportProtocol(a.SourceAddr)}
 }
