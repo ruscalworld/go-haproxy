@@ -19,15 +19,15 @@ HAProxy's protocol is quite simple. All that HAProxy does to forward client addr
 data after the connection is being established and before any other data is sent. This data forms a so-called _PROXY
 protocol header_. It contains such information as used protocol, source and destination IP address and ports, etc.
 
-## Using
+## Usage
 
 You can use this library for both: parsing and serializing HAProxy headers.
 
 ### Serializing
 
 Let's assume that you are building a TCP proxy server that should forward client address to a backend server. In this
-case you should just initialize a new instance of `haproxy.Header` structure, fill it with data and send to your backend
-server.
+case you should just initialize a new instance of `haproxy.Header` structure, fill it with data and send it to your
+backend server. Error handling is omitted in this example for simplicity.
 
 ```go
 package main
@@ -79,7 +79,7 @@ func main() {
 
 In cases when you want to add support for PROXY protocol to your backend service which is running behind proxy, you
 should just read the PROXY header before handling the connection. Make sure that only trusted proxies can send you a
-header.
+header. Error handling is omitted in this example for simplicity.
 
 ```go
 package main
@@ -91,14 +91,14 @@ import (
 )
 
 func main() {
-	server, _ := net.Listen("tcp", ":8008")
+	server, _ := net.Listen("tcp", ":8080")
 
 	for {
 		conn, _ := server.Accept()
 		remoteAddr := conn.RemoteAddr().String()
 
 		// If you are not going to configure the firewall of some kind that will allow connections to your service only 
-		// from trusted addresses, you must make such check that will prevent your service from reading PROXY headers sent 
+		// from trusted addresses, you must make check that will prevent your service from reading PROXY headers sent 
 		// by untrusted proxies.
 		if isTrusted(remoteAddr) {
 			// Read the PROXY header
