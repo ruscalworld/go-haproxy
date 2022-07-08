@@ -125,7 +125,7 @@ func WrapAddress(src, dst net.Addr) (ProxyAddress, error) {
 	if reflect.TypeOf(src) != reflect.TypeOf(dst) {
 		return nil, fmt.Errorf(
 			"expected source and destination addresses to be of the same type, but got source %s and destination %s",
-			reflect.TypeOf(src).String(), reflect.TypeOf(dst),
+			reflect.TypeOf(src).String(), reflect.TypeOf(dst).String(),
 		)
 	}
 
